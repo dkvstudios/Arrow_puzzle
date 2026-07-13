@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "865199838214",
+    "project_id": "arrow-flutter",
+    "storage_bucket": "arrow-flutter.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:865199838214:android:295c5a019c97f9e3b09f87",
+        "android_client_info": {
+          "package_name": "com.dkv.arrow_flutter"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDmMkHLH4aaBDl2QiyZa--rRcNwxY2yBXM"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
