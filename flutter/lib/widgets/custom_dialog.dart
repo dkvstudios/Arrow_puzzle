@@ -17,7 +17,7 @@ class CustomDialog extends StatelessWidget {
     return GestureDetector(
       onTap: () {}, // Prevent taps from passing through
       child: Container(
-        color: Colors.black.withOpacity(0.6),
+        color: Colors.black.withValues(alpha: 0.6),
         child: Center(
         child: TweenAnimationBuilder<double>(
           tween: Tween(begin: 0.0, end: 1.0),
@@ -68,7 +68,7 @@ class CustomDialog extends StatelessWidget {
                       borderRadius: BorderRadius.circular(25),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.15),
+                          color: Colors.black.withValues(alpha: 0.15),
                           offset: const Offset(0, 4),
                           blurRadius: 4,
                         ),

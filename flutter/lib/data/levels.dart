@@ -1,17 +1,6 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_database/firebase_database.dart';
 import '../utils/config.dart';
-
-// Define const colors for level data
-const _color0 = Color(0xFFE06652); // Red-Orange
-const _color1 = Color(0xFFF5A742); // Orange
-const _color2 = Color(0xFFF5EB5C); // Yellow
-const _color3 = Color(0xFF6EBD75); // Green
-const _color4 = Color(0xFF40C9D9); // Cyan
-const _color5 = Color(0xFF5BA3E0); // Blue
-const _color6 = Color(0xFFA366D9); // Purple
-const _color7 = Color(0xFFE066B8); // Pink
 
 class LevelData {
   String? id;
@@ -73,7 +62,7 @@ class BlockData {
       'x': x,
       'y': y,
       'dir': dirStr,
-      'color': color.value,
+      'color': color.toARGB32(),
     };
   }
 

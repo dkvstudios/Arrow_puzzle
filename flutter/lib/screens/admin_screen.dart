@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+// ignore: unused_import — BlockData is used; analyzer false-positive due to 'hide Block'
 import '../models/block.dart' hide Block;
 import '../data/levels.dart';
 import '../utils/config.dart';
-import '../widgets/shiny_button.dart';
 import 'dart:math' as math;
 
 class AdminScreen extends StatefulWidget {
@@ -40,6 +40,13 @@ class _AdminScreenState extends State<AdminScreen> {
 
   // Random generator
   final TextEditingController _blockCountController = TextEditingController(text: '25');
+  final math.Random _random = math.Random();
+
+  @override
+  void dispose() {
+    _blockCountController.dispose();
+    super.dispose();
+  }
   
   IconData _getIconForDirection(Direction dir) {
     switch (dir) {
@@ -89,11 +96,7 @@ class _AdminScreenState extends State<AdminScreen> {
     
     if (!mounted) return;
     
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Level saved successfully! It is now Level ${Levels.totalLevels}.')),
-    );
-    
-    Navigator.of(context).pop(); // Go back to game screen
+    Navigator.of(context).pop();
   }
 
   @override
@@ -252,16 +255,12 @@ class _AdminScreenState extends State<AdminScreen> {
             child: Container(
               margin: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.white.withOpacity(0.5),
+                color: Colors.white.withValues(alpha: 0.5),
                 borderRadius: BorderRadius.circular(16),
                 border: Border.all(color: Colors.white, width: 2),
               ),
               child: LayoutBuilder(
                 builder: (context, constraints) {
-                  final scaleX = constraints.maxWidth / (boardWidth + 40);
-                  final scaleY = constraints.maxHeight / (boardHeight + 40);
-                  final scale = math.min(scaleX, scaleY).clamp(0.2, 1.5);
-                  
                   return InteractiveViewer(
                     minScale: 0.2,
                     maxScale: 3.0,
@@ -285,7 +284,7 @@ class _AdminScreenState extends State<AdminScreen> {
                                     width: GameConfig.blockSize,
                                     height: GameConfig.blockSize,
                                     decoration: BoxDecoration(
-                                      color: Colors.black.withOpacity(0.05),
+                                      color: Colors.black.withValues(alpha: 0.05),
                                       borderRadius: BorderRadius.circular(GameConfig.blockRadius),
                                     ),
                                     child: Center(
@@ -293,7 +292,7 @@ class _AdminScreenState extends State<AdminScreen> {
                                         width: 8,
                                         height: 8,
                                         decoration: BoxDecoration(
-                                          color: Colors.black.withOpacity(0.1),
+                                          color: Colors.black.withValues(alpha: 0.1),
                                           shape: BoxShape.circle,
                                         ),
                                       ),
@@ -317,7 +316,7 @@ class _AdminScreenState extends State<AdminScreen> {
                                     borderRadius: BorderRadius.circular(GameConfig.blockRadius),
                                     boxShadow: [
                                       BoxShadow(
-                                        color: block.color.withOpacity(0.4),
+                                        color: block.color.withValues(alpha: 0.4),
                                         blurRadius: 8,
                                         offset: const Offset(0, 4),
                                       ),
@@ -423,12 +422,12 @@ class _AdminScreenState extends State<AdminScreen> {
         final cx = cell.dx.toInt();
         final cy = cell.dy.toInt();
         
-        List<Direction> dirs = Direction.values.toList()..shuffle();
+        List<Direction> dirs = Direction.values.toList()..shuffle(_random);
         bool placed = false;
         
         for (var dir in dirs) {
           if (_isPathClear(cx, cy, dir, newBlocks)) {
-            final randomColor = GameConfig.blockColors[math.Random().nextInt(GameConfig.blockColors.length)];
+            final randomColor = GameConfig.blockColors[_random.nextInt(GameConfig.blockColors.length)];
             newBlocks.add(BlockData(x: cx, y: cy, direction: dir, color: randomColor));
             placed = true;
             break;
@@ -454,9 +453,6 @@ class _AdminScreenState extends State<AdminScreen> {
       setState(() {
         placedBlocks = newBlocks;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Generated successfully!')),
-      );
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Failed to generate a solvable level with this shape. Try again!')),

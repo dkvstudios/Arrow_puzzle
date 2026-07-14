@@ -2,10 +2,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'screens/splash_screen.dart';
+import 'utils/ad_service.dart';
+import 'utils/progress_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp();
+  await AdService.initialize();
+  await ProgressService.instance.init();
   
   // Lock orientation to portrait
   SystemChrome.setPreferredOrientations([

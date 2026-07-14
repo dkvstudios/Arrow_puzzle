@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import '../data/levels.dart';
 import 'admin_screen.dart';
-import '../widgets/shiny_button.dart';
 
 class ManageLevelsScreen extends StatefulWidget {
   const ManageLevelsScreen({super.key});
@@ -47,7 +46,6 @@ class _ManageLevelsScreenState extends State<ManageLevelsScreen> {
       setState(() => _isLoading = true);
       await Levels.deleteCustomLevel(level.id!);
       setState(() => _isLoading = false);
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Level deleted.')));
     }
   }
 

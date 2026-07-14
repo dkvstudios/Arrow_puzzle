@@ -61,13 +61,13 @@ class BlockWidget extends StatelessWidget {
                       boxShadow: [
                         // Thick bottom bevel
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.25),
+                          color: Colors.black.withValues(alpha: 0.25),
                           offset: const Offset(0, 5),
                           blurRadius: 0,
                         ),
                         // Drop shadow
                         BoxShadow(
-                          color: Colors.black.withOpacity(0.15),
+                          color: Colors.black.withValues(alpha: 0.15),
                           offset: const Offset(0, 8),
                           blurRadius: 8,
                         ),
@@ -80,9 +80,9 @@ class BlockWidget extends StatelessWidget {
                           begin: Alignment.topLeft,
                           end: Alignment.bottomRight,
                           colors: [
-                            Colors.white.withOpacity(0.5),
-                            Colors.white.withOpacity(0.1),
-                            Colors.black.withOpacity(0.15),
+                            Colors.white.withValues(alpha: 0.5),
+                            Colors.white.withValues(alpha: 0.1),
+                            Colors.black.withValues(alpha: 0.15),
                           ],
                           stops: const [0.0, 0.5, 1.0],
                         ),
@@ -172,12 +172,12 @@ class BlockWidget extends StatelessWidget {
               end: end,
               colors: [
                 Colors.yellow,
-                Colors.yellow.withOpacity(0.0),
+                Colors.yellow.withValues(alpha: 0.0),
               ],
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.yellow.withOpacity(0.6),
+                color: Colors.yellow.withValues(alpha: 0.6),
                 blurRadius: 12,
                 spreadRadius: 2,
               )

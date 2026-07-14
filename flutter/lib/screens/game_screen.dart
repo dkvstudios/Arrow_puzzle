@@ -1,14 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'dart:async';
 import 'dart:math' as math;
+import 'package:vibration/vibration.dart';
 import '../models/block.dart';
 import '../data/levels.dart';
 import '../utils/config.dart';
+import '../utils/ad_service.dart';
+import '../utils/progress_service.dart';
 import '../widgets/block_widget.dart';
 import '../widgets/custom_dialog.dart';
 import '../widgets/shiny_button.dart';
-import 'admin_screen.dart';
 import 'manage_levels_screen.dart';
 
 class GameScreen extends StatefulWidget {
@@ -20,7 +21,7 @@ class GameScreen extends StatefulWidget {
 
 class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   // Game state
-  int currentLevel = 16;
+  int currentLevel = 1;
   int lives = GameConfig.initialLives;
   int coins = 0;
   List<Block> blocks = [];
@@ -41,6 +42,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   // Layout
   bool _needsCentering = true;
   
+  // Cached grid dots (rebuilt only when rows/cols change)
+  List<Widget> _cachedGridDots = [];
+  
   // Continue mechanics
   int _continueCost = 900;
   
@@ -51,19 +55,44 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   int _levelTapCount = 0;
   Timer? _tapTimer;
 
+  // Ad state
+  bool _isAdLoading = false;
+
+  // Loading state — true while SQLite progress is being read
+  bool _isLoadingProgress = true;
+
   @override
   void initState() {
     super.initState();
+    _loadProgress();
+    // Ads are preloaded in SplashScreen after AdConfig.loadAndSync()
+    // No need to reload here unless you want a safety net
+  }
+
+  /// Load saved progress from SQLite then start the correct level.
+  Future<void> _loadProgress() async {
+    final progress = await ProgressService.instance.loadAll();
+    setState(() {
+      currentLevel       = progress['level']     ?? 1;
+      coins              = progress['coins']      ?? 0;
+      isVibrationEnabled = (progress['vibration'] ?? 1) == 1;
+      isSoundEnabled     = (progress['sound']     ?? 1) == 1;
+      _isLoadingProgress = false;
+    });
     _loadLevel(currentLevel);
   }
-  
+
   @override
   void dispose() {
-    // Clean up all active controllers
-    for (var controller in _activeControllers) {
+    // Cancel admin tap timer
+    _tapTimer?.cancel();
+    // Clean up all active animation controllers
+    for (var controller in _activeControllers.toList()) {
       controller.dispose();
     }
     _activeControllers.clear();
+    // Dispose transformation controller
+    _transformationController.dispose();
     super.dispose();
   }
 
@@ -71,12 +100,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     print('📋 Loading level $levelNumber');
     final levelData = Levels.getLevel(levelNumber);
     if (levelData == null) {
-      print('🏆 All levels complete! Restarting from level 1');
       // All levels complete - restart from level 1
       setState(() {
         currentLevel = 1;
         lives = GameConfig.initialLives;
       });
+      // Reset saved progress so next launch also starts from 1
+      ProgressService.instance.saveCurrentLevel(1);
       _loadLevel(1);
       return;
     }
@@ -98,6 +128,8 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       isVictory = false;
       isGameOver = false;
       _continueCost = 900;
+      // Rebuild grid dots cache for new level dimensions
+      _cachedGridDots = _buildGridDots(levelData.rows, levelData.cols);
     });
   }
 
@@ -136,9 +168,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
     print('✅ VALID MOVE - Flying off!');
     
-    // Play haptic feedback
+    // Play haptic feedback — short single buzz on correct tap
     if (isVibrationEnabled) {
-      HapticFeedback.lightImpact();
+      Vibration.vibrate(duration: 60, amplitude: 180);
     }
 
     // Mark as animating immediately to prevent double-tap
@@ -232,9 +264,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _shakeBlock(Block block) {
-    print('💥 Starting shake animation for block at (${block.x}, ${block.y}) [ID: ${block.id}]');
+    // Wrong tap — strong buzz-pause-buzz-pause-buzz pattern
     if (isVibrationEnabled) {
-      HapticFeedback.mediumImpact();
+      Vibration.vibrate(
+        pattern: [0, 120, 80, 120, 80, 120],
+        intensities: [0, 255, 0, 255, 0, 255],
+      );
     }
 
     final controller = AnimationController(
@@ -284,15 +319,27 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   void _checkWinCondition() {
     final remainingBlocks = blocks.where((b) => !b.removed).length;
-    print('🔍 Checking win condition: $remainingBlocks blocks remaining');
     
     if (remainingBlocks == 0) {
-      print('🎉 VICTORY! Level $currentLevel completed!');
-      setState(() {
-        isVictory = true;
-        coins += 100;
-      });
-      HapticFeedback.heavyImpact();
+      // Victory — long strong buzz
+      if (isVibrationEnabled) {
+        Vibration.vibrate(duration: 400, amplitude: 255);
+      }
+
+      // Give coins immediately
+      setState(() => coins += 100);
+      ProgressService.instance.saveCoins(coins);
+
+      // Show interstitial only after level 3, then show victory popup when done
+      if (currentLevel > 3) {
+        AdService.instance.showInterstitialAd(
+          onDone: () {
+            if (mounted) setState(() => isVictory = true);
+          },
+        );
+      } else {
+        setState(() => isVictory = true);
+      }
     }
   }
 
@@ -308,24 +355,14 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _nextLevel() {
-    print('⬆️ Advancing to level ${currentLevel + 1}');
     setState(() {
       currentLevel++;
     });
+    ProgressService.instance.saveCurrentLevel(currentLevel);
     _loadLevel(currentLevel);
   }
 
-  void _restartGame() {
-    print('🔄 Restarting game from level 1');
-    setState(() {
-      currentLevel = 1;
-      lives = GameConfig.initialLives;
-    });
-    _loadLevel(1);
-  }
-
   void _restartLevel() {
-    print('🔄 Restarting current level');
     setState(() {
       lives = GameConfig.initialLives;
     });
@@ -337,6 +374,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     final newScale = math.min(2.5, currentScale + 0.2);
     final matrix = _transformationController.value.clone();
     // To scale around center, ideally we'd use a focal point, but scaling the matrix works too.
+    // ignore: deprecated_member_use
     matrix.scale(newScale / currentScale);
     _transformationController.value = matrix;
   }
@@ -345,21 +383,44 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     final currentScale = _transformationController.value.getMaxScaleOnAxis();
     final newScale = math.max(0.5, currentScale - 0.2);
     final matrix = _transformationController.value.clone();
+    // ignore: deprecated_member_use
     matrix.scale(newScale / currentScale);
     _transformationController.value = matrix;
   }
 
-  @override
-  Widget build(BuildContext context) {
+  /// Resets the board back to the centered fitted position — same as initial load.
+  void _resetView() {
     final cellSize = GameConfig.blockSize + GameConfig.blockGap;
-    final boardWidth = cols * cellSize - GameConfig.blockGap;
-    final boardHeight = rows * cellSize - GameConfig.blockGap;
+    final boardW   = cols * cellSize - GameConfig.blockGap;
+    final boardH   = rows * cellSize - GameConfig.blockGap;
+    final size     = MediaQuery.of(context).size;
 
-    // Generate grid dots background
-    final List<Widget> gridDots = [];
-    for (int y = 0; y < rows; y++) {
-      for (int x = 0; x < cols; x++) {
-        gridDots.add(
+    // Approximate available height (subtract top bar ~90 and bottom bar ~130)
+    final availW = size.width.toDouble();
+    final availH = size.height - 90 - 130;
+
+    const padding = 80.0;
+    final scaleX  = availW / (boardW + padding);
+    final scaleY  = availH / (boardH + padding);
+    final scale   = math.min(scaleX, scaleY).clamp(0.2, 1.5);
+
+    final dx = (availW - boardW * scale) / 2;
+    final dy = (availH - boardH * scale) / 2;
+
+    // ignore: deprecated_member_use
+    _transformationController.value = Matrix4.identity()
+      ..translate(dx, dy)
+      ..scale(scale);
+  }
+
+  /// Builds the static grid dot widgets for the given dimensions.
+  /// Called once per level load and cached in [_cachedGridDots].
+  List<Widget> _buildGridDots(int r, int c) {
+    final cellSize = GameConfig.blockSize + GameConfig.blockGap;
+    final List<Widget> dots = [];
+    for (int y = 0; y < r; y++) {
+      for (int x = 0; x < c; x++) {
+        dots.add(
           Positioned(
             left: x * cellSize + (GameConfig.blockSize / 2) - 3,
             top: y * cellSize + (GameConfig.blockSize / 2) - 3,
@@ -367,7 +428,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               width: 6,
               height: 6,
               decoration: BoxDecoration(
-                color: Colors.grey.withOpacity(0.3),
+                color: Colors.grey.withValues(alpha: 0.3),
                 shape: BoxShape.circle,
               ),
             ),
@@ -375,6 +436,24 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
         );
       }
     }
+    return dots;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Show loader while reading SQLite progress to avoid negative constraint crash
+    if (_isLoadingProgress) {
+      return const Scaffold(
+        backgroundColor: Color(0xFFF4F4F4),
+        body: Center(
+          child: CircularProgressIndicator(color: Color(0xFF5BA3E0)),
+        ),
+      );
+    }
+
+    final cellSize = GameConfig.blockSize + GameConfig.blockGap;
+    final boardWidth = cols * cellSize - GameConfig.blockGap;
+    final boardHeight = rows * cellSize - GameConfig.blockGap;
 
     return Scaffold(
       body: Container(
@@ -420,6 +499,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                                   final double dx = (constraints.maxWidth - (boardWidth * scale)) / 2;
                                   final double dy = (constraints.maxHeight - (boardHeight * scale)) / 2;
                                   
+                                  // ignore: deprecated_member_use
                                   _transformationController.value = Matrix4.identity()
                                     ..translate(dx, dy)
                                     ..scale(scale);
@@ -438,7 +518,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                                 clipBehavior: Clip.none,
                                 children: [
                                   // Grid dots
-                                  ...gridDots,
+                                  ..._cachedGridDots,
                                   // Blocks
                                   ...blocks.map((block) {
                                     return BlockWidget(
@@ -462,40 +542,67 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                           top: 0,
                           bottom: 0,
                           child: Center(
-                            child: Container(
-                              width: 44,
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(22),
-                                boxShadow: [
-                                  BoxShadow(
-                                    color: Colors.black.withValues(alpha: 0.1),
-                                    blurRadius: 8,
-                                    offset: const Offset(0, 4),
-                                  ),
-                                ],
-                              ),
-                              child: Column(
+                            child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  IconButton(
-                                    icon: const Icon(Icons.add, color: Color(0xFF5BA3E0)),
-                                    onPressed: _zoomIn,
-                                  ),
+                                  // Reset / re-center button (separate)
                                   Container(
-                                    height: 2,
-                                    width: 24,
-                                    color: Colors.grey.withValues(alpha: 0.2),
+                                    width: 44,
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(22),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.1),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                    child: IconButton(
+                                      icon: const Icon(Icons.center_focus_strong_rounded, color: Color(0xFF6EBD75)),
+                                      onPressed: _resetView,
+                                      tooltip: 'Reset View',
+                                    ),
                                   ),
-                                  IconButton(
-                                    icon: const Icon(Icons.remove, color: Color(0xFF5BA3E0)),
-                                    onPressed: _zoomOut,
+                                  const SizedBox(height: 12),
+                                  // Zoom in / out together
+                                  Container(
+                                    width: 44,
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(22),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.1),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        IconButton(
+                                          icon: const Icon(Icons.add, color: Color(0xFF5BA3E0)),
+                                          onPressed: _zoomIn,
+                                        ),
+                                        Container(
+                                          height: 2,
+                                          width: 24,
+                                          color: Colors.grey.withValues(alpha: 0.2),
+                                        ),
+                                        IconButton(
+                                          icon: const Icon(Icons.remove, color: Color(0xFF5BA3E0)),
+                                          onPressed: _zoomOut,
+                                        ),
+                                      ],
+                                    ),
                                   ),
                                 ],
                               ),
                             ),
                           ),
-                        ),
                       ],
                     ),
                   ),
@@ -536,7 +643,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               borderRadius: BorderRadius.circular(20),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.1),
+                  color: Colors.black.withValues(alpha: 0.1),
                   blurRadius: 4,
                   offset: const Offset(0, 2),
                 ),
@@ -588,7 +695,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
               border: Border.all(color: const Color(0xFF4A8CCC), width: 2),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.15),
+                  color: Colors.black.withValues(alpha: 0.15),
                   blurRadius: 4,
                   offset: const Offset(0, 4),
                 ),
@@ -611,7 +718,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                       size: 28,
                       shadows: [
                         Shadow(
-                          color: Colors.black.withOpacity(0.2),
+                          color: Colors.black.withValues(alpha: 0.2),
                           offset: const Offset(0, 2),
                           blurRadius: 2,
                         ),
@@ -645,12 +752,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           shape: BoxShape.circle,
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withOpacity(0.15),
+              color: Colors.black.withValues(alpha: 0.15),
               offset: const Offset(0, 3),
               blurRadius: 2,
             ),
           ],
-          border: Border.all(color: Colors.white.withOpacity(0.2), width: 1),
+          border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 1),
         ),
         child: Center(
           child: Icon(icon, color: Colors.white, size: 24),
@@ -677,7 +784,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             ),
             boxShadow: [
               BoxShadow(
-                color: Colors.black.withOpacity(0.15),
+                color: Colors.black.withValues(alpha: 0.15),
                 blurRadius: 12,
                 offset: const Offset(0, 6),
               ),
@@ -717,23 +824,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   Widget _buildVictoryPopup() {
     return CustomDialog(
       title: 'Level Complete',
-      onClose: () {},
       content: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 100,
-            height: 100,
-            decoration: BoxDecoration(
-              color: const Color(0xFF6EBD75).withOpacity(0.2),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(
-              Icons.check_circle_rounded,
-              color: Color(0xFF6EBD75),
-              size: 70,
-            ),
-          ),
           const SizedBox(height: 24),
           const Text(
             'AWESOME!',
@@ -745,34 +838,66 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             ),
           ),
           const SizedBox(height: 24),
-          // Stars
+          // Stars - one by one with zoom-out bounce
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: List.generate(3, (index) {
+              // Each star starts after the previous one finishes
+              // delay: index * 300ms, duration: 500ms each
+              final delayMs = index * 300;
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8.0),
                 child: TweenAnimationBuilder<double>(
                   tween: Tween(begin: 0.0, end: 1.0),
-                  duration: Duration(milliseconds: 300 + (index * 100)),
-                  curve: Curves.elasticOut,
-                  builder: (context, value, child) {
-                    return Transform.scale(
-                      scale: value,
-                      child: Transform.rotate(
-                        angle: value * math.pi * 2,
+                  duration: Duration(milliseconds: delayMs + 500),
+                  curve: Curves.linear,
+                  builder: (context, rawValue, child) {
+                    // Only animate during this star's window
+                    final double progress = ((rawValue * (delayMs + 500)) - delayMs)
+                        .clamp(0.0, 500.0) / 500.0;
+
+                    // Zoom from big (1.8x) down to normal (1.0x) with elastic bounce
+                    // scale: starts at 0, overshoots to 1.8, settles at 1.0
+                    double scale;
+                    double opacity;
+                    if (progress <= 0.0) {
+                      scale = 0.0;
+                      opacity = 0.0;
+                    } else if (progress < 0.3) {
+                      // Pop in: 0 → 1.8
+                      scale = (progress / 0.3) * 1.8;
+                      opacity = 1.0;
+                    } else if (progress < 0.6) {
+                      // Zoom out: 1.8 → 0.85
+                      scale = 1.8 - ((progress - 0.3) / 0.3) * 0.95;
+                      opacity = 1.0;
+                    } else if (progress < 0.8) {
+                      // Bounce back: 0.85 → 1.1
+                      scale = 0.85 + ((progress - 0.6) / 0.2) * 0.25;
+                      opacity = 1.0;
+                    } else {
+                      // Settle: 1.1 → 1.0
+                      scale = 1.1 - ((progress - 0.8) / 0.2) * 0.1;
+                      opacity = 1.0;
+                    }
+
+                    return Opacity(
+                      opacity: opacity,
+                      child: Transform.scale(
+                        scale: scale,
                         child: child,
                       ),
                     );
                   },
                   child: const Icon(
-                    Icons.star,
+                    Icons.star_rounded,
                     color: Color(0xFFFFD13B),
-                    size: 50,
+                    size: 60,
                     shadows: [
                       Shadow(
                         color: Colors.black26,
                         offset: Offset(0, 4),
-                        blurRadius: 4,
+                        blurRadius: 6,
                       ),
                     ],
                   ),
@@ -850,6 +975,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                   lives = GameConfig.initialLives;
                   isGameOver = false;
                 });
+                ProgressService.instance.saveCoins(coins);
               },
               height: 70,
               gradientColors: const [Color(0xFF77D328), Color(0xFF59B113)],
@@ -900,13 +1026,21 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             children: [
               ShinyButton(
                 onPressed: () {
-                  // TODO: Implement actual ad reward logic here
-                  setState(() {
-                    lives = GameConfig.initialLives;
-                    isGameOver = false;
-                  });
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('+3 Lives from Ad!')),
+                  Navigator.of(context, rootNavigator: true).pop();
+                  AdService.instance.showRewardedAd(
+                    onRewarded: (_) {
+                      if (!mounted) return;
+                      setState(() {
+                        lives = GameConfig.initialLives;
+                        isGameOver = false;
+                      });
+                    },
+                    onFailed: () {
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Ad not available. Try again later.')),
+                      );
+                    },
                   );
                 },
                 height: 60,
@@ -1012,8 +1146,11 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                 ),
                 Switch(
                   value: isVibrationEnabled,
-                  onChanged: (val) => setState(() => isVibrationEnabled = val),
-                  activeColor: const Color(0xFF77D328),
+                  onChanged: (val) {
+                    setState(() => isVibrationEnabled = val);
+                    ProgressService.instance.saveVibration(val);
+                  },
+                  activeThumbColor: const Color(0xFF77D328),
                 ),
               ],
             ),
@@ -1045,8 +1182,11 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                 ),
                 Switch(
                   value: isSoundEnabled,
-                  onChanged: (val) => setState(() => isSoundEnabled = val),
-                  activeColor: const Color(0xFF77D328),
+                  onChanged: (val) {
+                    setState(() => isSoundEnabled = val);
+                    ProgressService.instance.saveSound(val);
+                  },
+                  activeThumbColor: const Color(0xFF77D328),
                 ),
               ],
             ),
@@ -1076,53 +1216,127 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     showDialog(
       context: context,
       builder: (context) {
-        return CustomDialog(
-          title: 'COIN STORE',
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Text(
-                'Get more coins to continue your game!',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.black87,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 24),
-              ShinyButton(
-                gradientColors: const [Color(0xFF5EA1F8), Color(0xFF246DF1)],
-                borderColor: const Color(0xFF1B55C0),
-                onPressed: () {
-                  // TODO: Implement actual ad reward logic here
-                  setState(() {
-                    coins += 1000;
-                  });
-                  Navigator.of(context).pop();
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('+1000 Coins earned!')),
-                  );
-                },
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: const [
-                    Icon(Icons.play_circle_filled, color: Colors.white, size: 28),
-                    SizedBox(width: 12),
-                    Text(
-                      'WATCH AD\n+1000 COINS',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return CustomDialog(
+              title: 'COIN STORE',
+              onClose: () => Navigator.of(context).pop(),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Watch a short ad to earn coins!',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 16,
+                      color: Colors.black87,
+                      fontWeight: FontWeight.w600,
                     ),
-                  ],
-                ),
+                  ),
+                  const SizedBox(height: 8),
+                  // Coin reward info
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF4C2),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(color: const Color(0xFFFFD13B), width: 2),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: const [
+                        Icon(Icons.monetization_on_rounded, color: Color(0xFFFFD700), size: 28),
+                        SizedBox(width: 8),
+                        Text(
+                          '+50 Coins',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFFB35522),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  ShinyButton(
+                    gradientColors: const [Color(0xFF5EA1F8), Color(0xFF246DF1)],
+                    borderColor: const Color(0xFF1B55C0),
+                    onPressed: _isAdLoading
+                        ? () {} // disabled while loading
+                        : () {
+                            if (!AdService.instance.isReady) {
+                              // Ad not loaded yet — show loading state
+                              setDialogState(() {});
+                              setState(() => _isAdLoading = true);
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Ad is loading, please wait...')),
+                              );
+                              // Poll until ready (max 30 seconds)
+                              int attempts = 0;
+                              Future.doWhile(() async {
+                                await Future.delayed(const Duration(milliseconds: 500));
+                                attempts++;
+                                if (!mounted) return false;
+                                if (AdService.instance.isReady) {
+                                  setState(() => _isAdLoading = false);
+                                  setDialogState(() {});
+                                  return false;
+                                }
+                                if (attempts >= 60) {
+                                  // 30 seconds timeout — give up
+                                  if (mounted) setState(() => _isAdLoading = false);
+                                  return false;
+                                }
+                                return true;
+                              });
+                              return;
+                            }
+
+                            Navigator.of(context).pop();
+                            AdService.instance.showRewardedAd(
+                              onRewarded: (amount) {
+                                setState(() => coins += amount);
+                                ProgressService.instance.saveCoins(coins);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(content: Text('+$amount Coins earned!')),
+                                );
+                              },
+                              onFailed: () {
+                                setState(() => _isAdLoading = false);
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('Ad not available. Try again later.')),
+                                );
+                                AdService.instance.loadRewardedAd();
+                              },
+                            );
+                          },
+                    child: _isAdLoading
+                        ? const SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(color: Colors.white, strokeWidth: 3),
+                          )
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(Icons.play_circle_filled, color: Colors.white, size: 28),
+                              SizedBox(width: 12),
+                              Text(
+                                'WATCH AD  +50 COINS',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         );
       },
     );
@@ -1144,7 +1358,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   void _showPasswordDialog() {
     final TextEditingController passwordController = TextEditingController();
-    
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -1182,8 +1396,9 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                 borderColor: const Color(0xFF388E3C),
                 child: const Text('SUBMIT', style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
                 onPressed: () {
-                  if (passwordController.text == '1234') {
-                    Navigator.of(context).pop();
+                  final entered = passwordController.text;
+                  Navigator.of(context).pop();
+                  if (entered == '1234') {
                     Navigator.of(context).push(
                       MaterialPageRoute(builder: (context) => const ManageLevelsScreen()),
                     );
@@ -1191,7 +1406,6 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text('Incorrect password')),
                     );
-                    Navigator.of(context).pop();
                   }
                 },
               ),
@@ -1199,7 +1413,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           ),
           onClose: () => Navigator.of(context).pop(),
         );
-      }
-    );
+      },
+    ).then((_) => passwordController.dispose());
   }
 }
