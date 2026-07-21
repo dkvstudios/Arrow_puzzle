@@ -1,6 +1,8 @@
 import 'package:sqflite/sqflite.dart';
+import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import 'package:flutter/foundation.dart';
+import 'dart:async';
 
 /// Handles local SQLite storage for user game progress.
 ///
@@ -17,6 +19,10 @@ class ProgressService {
   static const int    _dbVersion = 1;
 
   Database? _db;
+  
+  // Batching mechanism for performance
+  Timer? _saveTimer;
+  final Map<String, int> _pendingSaves = {};
 
   /// Open (or create) the database. Call once at startup.
   Future<void> init() async {
@@ -66,7 +72,34 @@ class ProgressService {
       {'key': key, 'value': value},
       conflictAlgorithm: ConflictAlgorithm.replace,
     );
-    debugPrint('💾 ProgressService: $key = $value');
+    // debugPrint('💾 ProgressService: $key = $value'); // Removed for performance
+  }
+
+  /// Batched save - schedules a save operation without blocking UI
+  void _scheduleSave(String key, int value) {
+    _pendingSaves[key] = value;
+    
+    // Cancel existing timer and start a new one
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(milliseconds: 300), () async {
+      if (_pendingSaves.isEmpty) return;
+      
+      // Copy pending saves and clear
+      final saves = Map<String, int>.from(_pendingSaves);
+      _pendingSaves.clear();
+      
+      // Batch save all pending values
+      await init();
+      final batch = _db!.batch();
+      for (final entry in saves.entries) {
+        batch.insert(
+          _tableName,
+          {'key': entry.key, 'value': entry.value},
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+      await batch.commit(noResult: true);
+    });
   }
 
   // ── Public API ────────────────────────────────────────────────────────────
@@ -74,14 +107,20 @@ class ProgressService {
   /// Returns the saved current level (defaults to 1 on first launch).
   Future<int> getCurrentLevel() => _get('current_level', 1);
 
-  /// Saves the current level locally.
-  Future<void> saveCurrentLevel(int level) => _set('current_level', level);
+  /// Saves the current level locally (batched for performance).
+  void saveCurrentLevel(int level) => _scheduleSave('current_level', level);
+  
+  /// Saves the current level immediately (use only when app is closing).
+  Future<void> saveCurrentLevelSync(int level) => _set('current_level', level);
 
   /// Returns the saved coin count.
   Future<int> getCoins() => _get('coins', 0);
 
-  /// Saves the coin count locally.
-  Future<void> saveCoins(int coins) => _set('coins', coins);
+  /// Saves the coin count locally (batched for performance).
+  void saveCoins(int coins) => _scheduleSave('coins', coins);
+  
+  /// Saves the coin count immediately (use only when app is closing).
+  Future<void> saveCoinsSync(int coins) => _set('coins', coins);
 
   /// Returns vibration setting (defaults to true/1).
   Future<bool> getVibration() async => (await _get('vibration', 1)) == 1;
@@ -101,13 +140,14 @@ class ProgressService {
     final coins      = await getCoins();
     final vibration  = await _get('vibration', 1);
     final sound      = await _get('sound', 1);
-    print('════════════════════════════════════════');
-    print('📂 ProgressService — LOADED FROM SQLITE');
-    print('   Current Level : $level');
-    print('   Coins         : $coins');
-    print('   Vibration     : ${vibration == 1}');
-    print('   Sound         : ${sound == 1}');
-    print('════════════════════════════════════════');
+    // Removed debug prints for performance
+    // print('════════════════════════════════════════');
+    // print('📂 ProgressService — LOADED FROM SQLITE');
+    // print('   Current Level : $level');
+    // print('   Coins         : $coins');
+    // print('   Vibration     : ${vibration == 1}');
+    // print('   Sound         : ${sound == 1}');
+    // print('════════════════════════════════════════');
     return {
       'level':     level,
       'coins':     coins,

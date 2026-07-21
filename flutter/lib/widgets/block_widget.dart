@@ -3,114 +3,183 @@ import 'dart:math' as math;
 import '../models/block.dart';
 import '../utils/config.dart';
 
-class BlockWidget extends StatelessWidget {
+class BlockWidget extends StatefulWidget {
   final Block block;
   final VoidCallback onTap;
   final double cellSize;
+  final bool showHint; // Whether to show hint animation
 
   const BlockWidget({
     super.key,
     required this.block,
     required this.onTap,
     required this.cellSize,
+    this.showHint = false,
   });
 
   @override
+  State<BlockWidget> createState() => _BlockWidgetState();
+}
+
+class _BlockWidgetState extends State<BlockWidget> with SingleTickerProviderStateMixin {
+  late AnimationController _hintController;
+  late Animation<double> _pulseAnimation;
+  late Animation<double> _rotateAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _hintController = AnimationController(
+      duration: const Duration(milliseconds: 1500),
+      vsync: this,
+    );
+
+    // Pulse scale animation (1.0 -> 1.15 -> 1.0)
+    _pulseAnimation = TweenSequence<double>([
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.0, end: 1.15).chain(CurveTween(curve: Curves.easeOut)),
+        weight: 50,
+      ),
+      TweenSequenceItem(
+        tween: Tween<double>(begin: 1.15, end: 1.0).chain(CurveTween(curve: Curves.easeIn)),
+        weight: 50,
+      ),
+    ]).animate(_hintController);
+
+    // Rotate animation (0 -> 2π)
+    _rotateAnimation = Tween<double>(begin: 0, end: math.pi * 2).animate(_hintController);
+  }
+
+  @override
+  void didUpdateWidget(BlockWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.showHint && !oldWidget.showHint) {
+      _hintController.repeat();
+    } else if (!widget.showHint && oldWidget.showHint) {
+      _hintController.stop();
+      _hintController.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _hintController.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    if (block.removed && !block.isAnimating) {
-      print('🚫 BlockWidget: Hiding removed block at (${block.x}, ${block.y})');
+    if (widget.block.removed && !widget.block.isAnimating) {
       return const SizedBox.shrink();
     }
 
     // Calculate base position
-    double left = block.x * cellSize;
-    double top = block.y * cellSize;
+    double left = widget.block.x * widget.cellSize;
+    double top = widget.block.y * widget.cellSize;
 
     // Apply shake offset
-    if (block.isShaking) {
-      left += block.shakeOffset * math.sin(block.animProgress * math.pi * 6);
-      top += block.shakeOffset * math.cos(block.animProgress * math.pi * 6) * 0.5;
+    if (widget.block.isShaking) {
+      left += widget.block.shakeOffset * math.sin(widget.block.animProgress * math.pi * 6);
+      top += widget.block.shakeOffset * math.cos(widget.block.animProgress * math.pi * 6) * 0.5;
     }
 
     // Apply fly-off animation to reach targetPosition
-    if (block.isAnimating && block.targetPosition != null) {
-      final progress = block.animProgress;
-      left = left + (block.targetPosition!.dx - (block.x * cellSize)) * progress;
-      top = top + (block.targetPosition!.dy - (block.y * cellSize)) * progress;
+    if (widget.block.isAnimating && widget.block.targetPosition != null) {
+      final progress = widget.block.animProgress;
+      left = left + (widget.block.targetPosition!.dx - (widget.block.x * widget.cellSize)) * progress;
+      top = top + (widget.block.targetPosition!.dy - (widget.block.y * widget.cellSize)) * progress;
     }
 
     return Positioned(
       left: left,
       top: top,
-      child: GestureDetector(
-        onTap: block.isAnimating || block.removed ? null : onTap,
-        child: Stack(
-          clipBehavior: Clip.none,
-          children: [
-            if (block.isAnimating) _buildTrail(),
-            Opacity(
-              opacity: block.opacity,
-              child: Transform.scale(
-                scale: block.scale,
-                child: Container(
-                  width: GameConfig.blockSize,
-                  height: GameConfig.blockSize,
-                  decoration: BoxDecoration(
-                      color: block.color,
-                      borderRadius: BorderRadius.circular(GameConfig.blockRadius),
-                      boxShadow: [
-                        // Thick bottom bevel
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.25),
-                          offset: const Offset(0, 5),
-                          blurRadius: 0,
-                        ),
-                        // Drop shadow
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.15),
-                          offset: const Offset(0, 8),
-                          blurRadius: 8,
-                        ),
-                      ],
-                    ),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(GameConfig.blockRadius),
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [
-                            Colors.white.withValues(alpha: 0.5),
-                            Colors.white.withValues(alpha: 0.1),
-                            Colors.black.withValues(alpha: 0.15),
-                          ],
-                          stops: const [0.0, 0.5, 1.0],
-                        ),
-                      ),
-                      child: Center(
-                        child: SizedBox(
-                          width: GameConfig.blockSize * 0.5, // 50% of block size
-                          height: GameConfig.blockSize * 0.5,
-                          child: CustomPaint(
-                            painter: ArrowPainter(
-                              direction: block.direction,
-                              color: Colors.white,
+      child: RepaintBoundary(
+        child: GestureDetector(
+          onTap: widget.block.isAnimating || widget.block.removed ? null : widget.onTap,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+            if (widget.block.isAnimating) _buildTrail(),
+            // Pulsing scale animation for the hint block
+            AnimatedBuilder(
+              animation: widget.showHint ? _pulseAnimation : const AlwaysStoppedAnimation(1.0),
+              builder: (context, child) {
+                return Transform.scale(
+                  scale: widget.showHint ? _pulseAnimation.value : 1.0,
+                  child: Opacity(
+                    opacity: widget.block.opacity,
+                    child: Transform.scale(
+                      scale: widget.block.scale,
+                      child: Container(
+                        width: GameConfig.blockSize,
+                        height: GameConfig.blockSize,
+                        decoration: BoxDecoration(
+                            color: widget.block.color,
+                            borderRadius: BorderRadius.circular(GameConfig.blockRadius),
+                            boxShadow: [
+                              // Thick bottom bevel
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.25),
+                                offset: const Offset(0, 5),
+                                blurRadius: 0,
+                              ),
+                              // Drop shadow
+                              BoxShadow(
+                                color: Colors.black.withValues(alpha: 0.15),
+                                offset: const Offset(0, 8),
+                                blurRadius: 8,
+                              ),
+                              // Hint glow effect
+                              if (widget.showHint)
+                                BoxShadow(
+                                  color: const Color(0xFFF5A742).withValues(alpha: 0.6),
+                                  blurRadius: 20,
+                                  spreadRadius: 4,
+                                ),
+                            ],
+                          ),
+                          child: Container(
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(GameConfig.blockRadius),
+                              gradient: LinearGradient(
+                                begin: Alignment.topLeft,
+                                end: Alignment.bottomRight,
+                                colors: [
+                                  Colors.white.withValues(alpha: 0.5),
+                                  Colors.white.withValues(alpha: 0.1),
+                                  Colors.black.withValues(alpha: 0.15),
+                                ],
+                                stops: const [0.0, 0.5, 1.0],
+                              ),
                             ),
+                            child: Center(
+                              child: SizedBox(
+                                width: GameConfig.blockSize * 0.5, // 50% of block size
+                                height: GameConfig.blockSize * 0.5,
+                                child: CustomPaint(
+                                  painter: ArrowPainter(
+                                    direction: widget.block.direction,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
                           ),
                         ),
+                      ),
                     ),
                   ),
-                ),
-              ),
+                );
+              },
             ),
           ],
+        ),
         ),
       ),
     );
   }
 
   Widget _buildTrail() {
-    if (block.animProgress == 0) return const SizedBox.shrink();
+    if (widget.block.animProgress == 0) return const SizedBox.shrink();
 
     Alignment begin = Alignment.center;
     Alignment end = Alignment.center;
@@ -120,9 +189,9 @@ class BlockWidget extends StatelessWidget {
     double offsetY = 0;
 
     double maxTrailLength = 120.0;
-    double currentTrailLength = maxTrailLength * block.animProgress;
+    double currentTrailLength = maxTrailLength * widget.block.animProgress;
 
-    switch (block.direction) {
+    switch (widget.block.direction) {
       case Direction.up:
         width = GameConfig.blockSize;
         height = currentTrailLength;
@@ -161,7 +230,7 @@ class BlockWidget extends StatelessWidget {
       left: offsetX,
       top: offsetY,
       child: Opacity(
-        opacity: block.opacity,
+        opacity: widget.block.opacity,
         child: Container(
           width: width,
           height: height,

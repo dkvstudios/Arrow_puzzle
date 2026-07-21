@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../utils/sound_service.dart';
 
 class ShinyButton extends StatefulWidget {
   final VoidCallback onPressed;
@@ -32,6 +33,7 @@ class _ShinyButtonState extends State<ShinyButton> {
     return GestureDetector(
       onTapDown: (_) => setState(() => _isPressed = true),
       onTapUp: (_) {
+        SoundService.instance.playTouch();
         setState(() => _isPressed = false);
         widget.onPressed();
       },

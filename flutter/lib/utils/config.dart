@@ -9,11 +9,11 @@ class GameConfig {
   static const double blockGap = 8.0;
   static const double blockRadius = 12.0;
   
-  // Animation Durations
-  static const Duration blockMoveDuration = Duration(milliseconds: 700);
-  static const Duration shakeDuration = Duration(milliseconds: 400);
-  static const Duration popupDuration = Duration(milliseconds: 300);
-  static const Duration victoryDelay = Duration(milliseconds: 1500);
+  // Animation Durations - Unity-style snappy timings
+  static const Duration blockMoveDuration = Duration(milliseconds: 250);
+  static const Duration shakeDuration = Duration(milliseconds: 200);
+  static const Duration popupDuration = Duration(milliseconds: 200);
+  static const Duration victoryDelay = Duration(milliseconds: 800);
   
   // Colors - Matching website exactly
   static const Color backgroundColor = Color(0xFFF4F4F4);
@@ -44,8 +44,9 @@ class GameConfig {
   static const int confettiCount = 30;
   
   // Easing Curves
-  // Website uses cubic-bezier(0.4, 0, 0.8, 0.6) for fly-off animation
-  static const Curve blockMoveCurve = Curves.easeOutExpo;
+  // Unity-style aggressive curves for snappy feel
+  static const Curve blockMoveCurve = Curves.easeOutCubic; // Faster than easeOutExpo
+  static const Curve shakeCurve = Curves.elasticOut; // Bouncy shake
   static const Curve popupCurve = Curves.easeOutBack;
 }
 

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:vibration/vibration.dart';
@@ -7,6 +8,8 @@ import '../data/levels.dart';
 import '../utils/config.dart';
 import '../utils/ad_service.dart';
 import '../utils/progress_service.dart';
+import '../utils/sound_service.dart';
+import '../services/update_service.dart';
 import '../widgets/block_widget.dart';
 import '../widgets/custom_dialog.dart';
 import '../widgets/shiny_button.dart';
@@ -29,6 +32,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   int rows = 0;
   int cols = 0;
   final TransformationController _transformationController = TransformationController();
+  
+  // PERFORMANCE: ValueNotifier for fast block updates without full rebuilds
+  final ValueNotifier<int> _blockUpdateNotifier = ValueNotifier<int>(0);
+  
+  // PERFORMANCE: Separate notifiers for UI elements (coins, lives) to avoid rebuilding game board
+  final ValueNotifier<int> _coinsNotifier = ValueNotifier<int>(0);
+  final ValueNotifier<int> _livesNotifier = ValueNotifier<int>(GameConfig.initialLives);
   
   // Game status
   bool isVictory = false;
@@ -61,12 +71,23 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   // Loading state — true while SQLite progress is being read
   bool _isLoadingProgress = true;
 
+  // Hint state
+  String? _hintBlockId; // ID of block to highlight with hint animation
+  int _hintCost = 50; // Cost in coins for a hint
+
   @override
   void initState() {
     super.initState();
     _loadProgress();
     // Ads are preloaded in SplashScreen after AdConfig.loadAndSync()
     // No need to reload here unless you want a safety net
+    
+    // Check for app updates from Play Store
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        UpdateService.instance.checkForUpdate(context);
+      }
+    });
   }
 
   /// Load saved progress from SQLite then start the correct level.
@@ -79,6 +100,11 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       isSoundEnabled     = (progress['sound']     ?? 1) == 1;
       _isLoadingProgress = false;
     });
+    // Sync ValueNotifiers with loaded state
+    _coinsNotifier.value = coins;
+    _livesNotifier.value = lives;
+    // Sync sound service with game settings
+    SoundService.instance.setSoundEnabled(isSoundEnabled);
     _loadLevel(currentLevel);
   }
 
@@ -93,11 +119,14 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _activeControllers.clear();
     // Dispose transformation controller
     _transformationController.dispose();
+    // Dispose ValueNotifiers
+    _blockUpdateNotifier.dispose();
+    _coinsNotifier.dispose();
+    _livesNotifier.dispose();
     super.dispose();
   }
 
   void _loadLevel(int levelNumber) {
-    print('📋 Loading level $levelNumber');
     final levelData = Levels.getLevel(levelNumber);
     if (levelData == null) {
       // All levels complete - restart from level 1
@@ -128,9 +157,13 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       isVictory = false;
       isGameOver = false;
       _continueCost = 900;
+      _hintBlockId = null; // Clear hint on new level
       // Rebuild grid dots cache for new level dimensions
       _cachedGridDots = _buildGridDots(levelData.rows, levelData.cols);
     });
+    
+    // Reset tring sound sequence for new level (starts with Tring-1)
+    SoundService.instance.resetTringSequence();
   }
 
   void _handleBlockTap(Block block) {
@@ -140,33 +173,41 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     // Prevent interaction during game over or victory
     if (isGameOver || isVictory) return;
 
+    // Clear hint when any block is tapped
+    // PERFORMANCE: Direct assignment instead of setState (hint UI uses separate widget)
+    if (_hintBlockId != null) {
+      _hintBlockId = null;
+      _blockUpdateNotifier.value++; // Trigger rebuild to clear hint pulse
+    }
+
     // Print tap information to console
-    print('🎯 ARROW TAPPED:');
-    print('   Position: (${block.x}, ${block.y})');
-    print('   Direction: ${block.direction}');
-    print('   Color: ${block.color}');
+    // Debug logging removed for performance
     
     final canMove = block.canMove(grid, rows, cols);
-    print('   Can Move: $canMove');
 
     // Check if block can move (path must be clear in arrow direction)
     if (!canMove) {
-      print('❌ BLOCKED - Shaking! Lives: $lives → ${lives - 1}');
+      // Debug logging removed for performance
       
       // Mark as shaking immediately to prevent double-tap
-      setState(() {
-        final index = blocks.indexWhere((b) => b.id == block.id);
-        if (index >= 0) {
-          blocks[index] = blocks[index].copyWith(isShaking: true);
-        }
-      });
+      // PERFORMANCE: Use ValueNotifier instead of setState for block updates
+      final index = blocks.indexWhere((b) => b.id == block.id);
+      if (index >= 0) {
+        blocks[index] = blocks[index].copyWith(isShaking: true);
+        _blockUpdateNotifier.value++; // Trigger rebuild
+      }
       
       _shakeBlock(block);
       _loseLife();
       return;
     }
 
-    print('✅ VALID MOVE - Flying off!');
+    // print('✅ VALID MOVE - Flying off!'); // Removed for performance
+    
+    // Play alternating arrow tap sound (Tring-1 → Tring-2 → Tring-1 ...)
+    if (isSoundEnabled) {
+      SoundService.instance.playArrowTap();
+    }
     
     // Play haptic feedback — short single buzz on correct tap
     if (isVibrationEnabled) {
@@ -174,12 +215,12 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     }
 
     // Mark as animating immediately to prevent double-tap
-    setState(() {
-      final index = blocks.indexWhere((b) => b.id == block.id);
-      if (index >= 0) {
-        blocks[index] = blocks[index].copyWith(isAnimating: true);
-      }
-    });
+    // PERFORMANCE: Use ValueNotifier instead of setState
+    final index = blocks.indexWhere((b) => b.id == block.id);
+    if (index >= 0) {
+      blocks[index] = blocks[index].copyWith(isAnimating: true);
+      _blockUpdateNotifier.value++; // Trigger rebuild
+    }
 
     // Remove from grid immediately so other blocks can move
     grid[block.y][block.x] = false;
@@ -196,7 +237,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _animateBlockRemoval(Block block) {
-    print('🚀 Starting fly-off animation for block at (${block.x}, ${block.y}) [ID: ${block.id}]');
+    // print('🚀 Starting fly-off animation for block at (${block.x}, ${block.y}) [ID: ${block.id}]'); // Removed for performance
 
     final controller = AnimationController(
       vsync: this,
@@ -207,51 +248,55 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     _activeControllers.add(controller);
 
     final targetPos = block.getTargetPosition(rows, cols);
-    print('   Target position: $targetPos');
+    // print('   Target position: $targetPos'); // Removed for performance
     
     final animation = CurvedAnimation(
       parent: controller,
       curve: GameConfig.blockMoveCurve,
     );
 
+    // PERFORMANCE OPTIMIZATION: Use ValueNotifier instead of setState
+    // This only rebuilds the blocks list, not the entire screen
     animation.addListener(() {
       if (!mounted) return;
-      setState(() {
-        final currentIndex = blocks.indexWhere((b) => b.id == block.id);
-        if (currentIndex >= 0) {
-          // Only fade and shrink at the very end of the animation (last 20% of time)
-          final destroyProgress = controller.value > 0.8 
-              ? (controller.value - 0.8) / 0.2 
-              : 0.0;
-              
-          blocks[currentIndex] = blocks[currentIndex].copyWith(
-            isAnimating: true,
-            animProgress: animation.value,
-            targetPosition: targetPos,
-            opacity: 1.0 - destroyProgress,
-            scale: 1.0 - destroyProgress,
-          );
-        }
-      });
+      final currentIndex = blocks.indexWhere((b) => b.id == block.id);
+      if (currentIndex >= 0) {
+        // Only fade and shrink at the very end of the animation (last 20% of time)
+        final destroyProgress = controller.value > 0.8 
+            ? (controller.value - 0.8) / 0.2 
+            : 0.0;
+            
+        // Update block properties directly
+        blocks[currentIndex] = blocks[currentIndex].copyWith(
+          isAnimating: true,
+          animProgress: animation.value,
+          targetPosition: targetPos,
+          opacity: 1.0 - destroyProgress,
+          scale: 1.0 - destroyProgress,
+        );
+        
+        // Notify only the blocks list to rebuild, not entire screen
+        _blockUpdateNotifier.value++;
+      }
     });
 
     controller.addStatusListener((status) {
       if (status == AnimationStatus.completed || status == AnimationStatus.dismissed) {
-        print('✨ Fly-off animation completed');
+        // print('✨ Fly-off animation completed'); // Removed for performance
         if (!mounted) return;
-        setState(() {
-          final currentIndex = blocks.indexWhere((b) => b.id == block.id);
-          if (currentIndex >= 0) {
-            blocks[currentIndex] = blocks[currentIndex].copyWith(
-              removed: true,
-              isAnimating: false,
-            );
-            print('   Block marked as removed: ${blocks[currentIndex].removed}');
-            print('   Block isAnimating: ${blocks[currentIndex].isAnimating}');
-          } else {
-            print('   ⚠️ Block not found in list!');
-          }
-        });
+        
+        final currentIndex = blocks.indexWhere((b) => b.id == block.id);
+        if (currentIndex >= 0) {
+          blocks[currentIndex] = blocks[currentIndex].copyWith(
+            removed: true,
+            isAnimating: false,
+          );
+          // Notify blocks list to rebuild
+          _blockUpdateNotifier.value++;
+        }
+        
+        // Check for level completion (only call setState for major state changes)
+        _checkLevelCompletion();
         
         // Clean up controller
         _activeControllers.remove(controller);
@@ -264,11 +309,11 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _shakeBlock(Block block) {
-    // Wrong tap — strong buzz-pause-buzz-pause-buzz pattern
+    // Wrong tap — quick double buzz for instant feedback
     if (isVibrationEnabled) {
       Vibration.vibrate(
-        pattern: [0, 120, 80, 120, 80, 120],
-        intensities: [0, 255, 0, 255, 0, 255],
+        pattern: [0, 50, 40, 50],
+        intensities: [0, 255, 0, 255],
       );
     }
 
@@ -280,36 +325,42 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     // Track controller for cleanup
     _activeControllers.add(controller);
 
-    controller.addListener(() {
+    // Use elastic curve for bouncy shake
+    final animation = CurvedAnimation(
+      parent: controller,
+      curve: GameConfig.shakeCurve,
+    );
+
+    // PERFORMANCE: Use ValueNotifier instead of setState
+    animation.addListener(() {
       if (!mounted) return;
-      setState(() {
-        final currentIndex = blocks.indexWhere((b) => b.id == block.id);
-        if (currentIndex >= 0) {
-          blocks[currentIndex] = blocks[currentIndex].copyWith(
-            isShaking: true,
-            animProgress: controller.value,
-            shakeOffset: 8.0,
-          );
-        }
-      });
+      final currentIndex = blocks.indexWhere((b) => b.id == block.id);
+      if (currentIndex >= 0) {
+        blocks[currentIndex] = blocks[currentIndex].copyWith(
+          isShaking: true,
+          animProgress: animation.value,
+          shakeOffset: 10.0, // Slightly stronger shake
+        );
+        _blockUpdateNotifier.value++;
+      }
     });
 
     controller.addStatusListener((status) {
       if (status == AnimationStatus.completed || status == AnimationStatus.dismissed) {
         if (!mounted) return;
-        setState(() {
-          final currentIndex = blocks.indexWhere((b) => b.id == block.id);
-          if (currentIndex >= 0) {
-            blocks[currentIndex] = blocks[currentIndex].copyWith(
-              isShaking: false,
-              animProgress: 0.0,
-              shakeOffset: 0.0,
-            );
-          }
-        });
+        final currentIndex = blocks.indexWhere((b) => b.id == block.id);
+        if (currentIndex >= 0) {
+          blocks[currentIndex] = blocks[currentIndex].copyWith(
+            isShaking: false,
+            animProgress: 0.0,
+            shakeOffset: 0.0,
+          );
+          _blockUpdateNotifier.value++;
+        }
         
         // Clean up controller
         _activeControllers.remove(controller);
+        animation.dispose();
         controller.dispose();
       }
     });
@@ -327,31 +378,38 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
       }
 
       // Give coins immediately
-      setState(() => coins += 100);
+      coins += 100;
+      _coinsNotifier.value = coins; // PERFORMANCE: Update notifier instead of setState
       ProgressService.instance.saveCoins(coins);
 
       // Show interstitial only after level 3, then show victory popup when done
       if (currentLevel > 3) {
         AdService.instance.showInterstitialAd(
           onDone: () {
+            SoundService.instance.playDialogOpen();
             if (mounted) setState(() => isVictory = true);
           },
         );
       } else {
+        SoundService.instance.playDialogOpen();
         setState(() => isVictory = true);
       }
     }
   }
 
+  // Helper method to check level completion after animation
+  void _checkLevelCompletion() {
+    _checkWinCondition();
+  }
+
   void _loseLife() {
-    setState(() {
-      lives--;
-      print('💔 Life lost! Remaining lives: $lives');
-      if (lives <= 0) {
-        print('☠️ GAME OVER!');
-        isGameOver = true;
-      }
-    });
+    lives--;
+    _livesNotifier.value = lives; // PERFORMANCE: Update notifier instead of setState
+    // print('💔 Life lost! Remaining lives: $lives'); // Removed for performance
+    if (lives <= 0) {
+      // print('☠️ GAME OVER!'); // Removed for performance
+      setState(() => isGameOver = true); // Game over requires full rebuild for dialog
+    }
   }
 
   void _nextLevel() {
@@ -363,13 +421,85 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _restartLevel() {
-    setState(() {
-      lives = GameConfig.initialLives;
-    });
+    lives = GameConfig.initialLives;
+    _hintBlockId = null; // Clear hint on restart
+    _livesNotifier.value = lives; // PERFORMANCE: Update notifier
+    _blockUpdateNotifier.value++; // Trigger rebuild to clear hint
     _loadLevel(currentLevel);
   }
 
+  /// Show hint - find the first valid block that can move
+  void _showHint() {
+    SoundService.instance.playTouch();
+    // If hint is already active, do nothing
+    if (_hintBlockId != null) {
+      return;
+    }
+
+    // Check if user has enough coins
+    if (coins < _hintCost) {
+      _showStoreDialog(); // Open coin store directly
+      return;
+    }
+
+    // Find first block that can move
+    Block? hintBlock;
+    for (final block in blocks) {
+      if (!block.removed && !block.isAnimating && block.canMove(grid, rows, cols)) {
+        hintBlock = block;
+        break;
+      }
+    }
+
+    if (hintBlock == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No valid moves available!')),
+      );
+      return;
+    }
+
+    // Deduct coins and show hint
+    coins -= _hintCost;
+    _hintBlockId = hintBlock!.id;
+    _coinsNotifier.value = coins; // PERFORMANCE: Update notifier instead of setState
+    _blockUpdateNotifier.value++; // Trigger rebuild to show hint pulse
+    ProgressService.instance.saveCoins(coins);
+    
+    // Pan to bring hint block into view
+    _panToBlock(hintBlock);
+    
+    // Hint will stay until user taps any block
+  }
+
+  /// Pan the view to bring a specific block into the center of the screen
+  void _panToBlock(Block block) {
+    // Get current transformation
+    final matrix = _transformationController.value;
+    final scale = matrix.getMaxScaleOnAxis();
+    
+    // Calculate block's center position in grid coordinates
+    final cellSize = GameConfig.blockSize + GameConfig.blockGap;
+    final blockCenterX = block.x * cellSize + GameConfig.blockSize / 2;
+    final blockCenterY = block.y * cellSize + GameConfig.blockSize / 2;
+    
+    // Get screen dimensions (approximate - will be adjusted by InteractiveViewer)
+    final screenWidth = MediaQuery.of(context).size.width;
+    final screenHeight = MediaQuery.of(context).size.height - 200; // Subtract top/bottom bars
+    
+    // Calculate desired translation to center the block
+    final targetX = (screenWidth / 2) - (blockCenterX * scale);
+    final targetY = (screenHeight / 2) - (blockCenterY * scale);
+    
+    // Animate to new position
+    final newMatrix = Matrix4.identity()
+      ..translate(targetX, targetY)
+      ..scale(scale);
+    
+    _transformationController.value = newMatrix;
+  }
+
   void _zoomIn() {
+    SoundService.instance.playTouch();
     final currentScale = _transformationController.value.getMaxScaleOnAxis();
     final newScale = math.min(2.5, currentScale + 0.2);
     final matrix = _transformationController.value.clone();
@@ -380,6 +510,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   }
 
   void _zoomOut() {
+    SoundService.instance.playTouch();
     final currentScale = _transformationController.value.getMaxScaleOnAxis();
     final newScale = math.max(0.5, currentScale - 0.2);
     final matrix = _transformationController.value.clone();
@@ -390,6 +521,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
 
   /// Resets the board back to the centered fitted position — same as initial load.
   void _resetView() {
+    SoundService.instance.playTouch();
     final cellSize = GameConfig.blockSize + GameConfig.blockGap;
     final boardW   = cols * cellSize - GameConfig.blockGap;
     final boardH   = rows * cellSize - GameConfig.blockGap;
@@ -511,30 +643,39 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                                 maxScale: 3.0,
                                 constrained: false,
                                 boundaryMargin: const EdgeInsets.all(2000),
-                            child: SizedBox(
-                              width: boardWidth,
-                              height: boardHeight,
-                              child: Stack(
-                                clipBehavior: Clip.none,
-                                children: [
-                                  // Grid dots
-                                  ..._cachedGridDots,
-                                  // Blocks
-                                  ...blocks.map((block) {
-                                    return BlockWidget(
-                                      key: ValueKey(block.id),
-                                      block: block,
-                                      onTap: () => _handleBlockTap(block),
-                                      cellSize: cellSize,
-                                    );
-                                  }),
-                                ],
+                                child: RepaintBoundary(
+                                  child: SizedBox(
+                                    width: boardWidth,
+                                    height: boardHeight,
+                                    // PERFORMANCE: ValueListenableBuilder only rebuilds blocks, not entire screen
+                                    child: ValueListenableBuilder<int>(
+                                      valueListenable: _blockUpdateNotifier,
+                                      builder: (context, _, __) {
+                                        return Stack(
+                                          clipBehavior: Clip.none,
+                                          children: [
+                                            // Grid dots (cached, never rebuild)
+                                            ..._cachedGridDots,
+                                            // Blocks (rebuild only when _blockUpdateNotifier changes)
+                                            ...blocks.map((block) {
+                                              return BlockWidget(
+                                                key: ValueKey(block.id),
+                                                block: block,
+                                                onTap: () => _handleBlockTap(block),
+                                                cellSize: cellSize,
+                                                showHint: block.id == _hintBlockId,
+                                              );
+                                            }),
+                                          ],
+                                        );
+                                      },
+                                    ),
+                                  ),
                                 ),
-                              ),
-                            );
-                          },
+                              );
+                            },
+                          ),
                         ),
-                      ),
                         
                         // Zoom controls on the left
                         Positioned(
@@ -599,6 +740,29 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                                       ],
                                     ),
                                   ),
+                                  const SizedBox(height: 12),
+                                  // Hint button
+                                  Container(
+                                    width: 48,
+                                    height: 48,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFF5A742),
+                                      borderRadius: BorderRadius.circular(22),
+                                      boxShadow: [
+                                        BoxShadow(
+                                          color: Colors.black.withValues(alpha: 0.15),
+                                          blurRadius: 8,
+                                          offset: const Offset(0, 4),
+                                        ),
+                                      ],
+                                      border: Border.all(color: Colors.white.withValues(alpha: 0.2), width: 1),
+                                    ),
+                                    child: IconButton(
+                                      icon: const Icon(Icons.lightbulb_outline, color: Colors.white, size: 24),
+                                      onPressed: _showHint,
+                                      tooltip: 'Hint (50 coins)',
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
@@ -630,111 +794,40 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
   Widget _buildTopBar() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 20.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      child: Stack(
         children: [
-          // Left: Coin Panel
-          GestureDetector(
-            onTap: _showStoreDialog,
-            child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.1),
-                  blurRadius: 4,
-                  offset: const Offset(0, 2),
-                ),
-              ],
+          // Left: Coin Panel (PERFORMANCE: ValueListenableBuilder only rebuilds when coins change)
+          Align(
+            alignment: Alignment.centerLeft,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _coinsNotifier,
+              builder: (context, coinsValue, _) => _CoinDisplay(
+                coins: coinsValue,
+                onTap: _showStoreDialog,
+              ),
             ),
-            child: Row(
-              children: [
-                Stack(
-                  alignment: Alignment.bottomRight,
-                  children: [
-                    Container(
-                      width: 28,
-                      height: 28,
-                      decoration: const BoxDecoration(
-                        color: Color(0xFFFFD700),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.home_rounded, color: Colors.white, size: 18),
-                    ),
-                    Container(
-                      decoration: const BoxDecoration(
-                        color: Color(0xFF6EBD75),
-                        shape: BoxShape.circle,
-                      ),
-                      child: const Icon(Icons.add, color: Colors.white, size: 12),
-                    ),
-                  ],
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  '$coins',
-                  style: const TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF8B4513),
-                  ),
-                ),
-              ],
-            ),
-          ),
           ),
           
-          // Center: Hearts Panel
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 8.0),
-            decoration: BoxDecoration(
-              color: const Color(0xFF5BA3E0),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: const Color(0xFF4A8CCC), width: 2),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.15),
-                  blurRadius: 4,
-                  offset: const Offset(0, 4),
-                ),
-              ],
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: List.generate(GameConfig.initialLives, (index) {
-                return Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 4.0),
-                  child: AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 300),
-                    transitionBuilder: (Widget child, Animation<double> animation) {
-                      return ScaleTransition(scale: animation, child: child);
-                    },
-                    child: Icon(
-                      index < lives ? Icons.favorite : Icons.favorite_border,
-                      key: ValueKey<bool>(index < lives),
-                      color: index < lives ? const Color(0xFFE06652) : const Color(0xFFD4B895),
-                      size: 28,
-                      shadows: [
-                        Shadow(
-                          color: Colors.black.withValues(alpha: 0.2),
-                          offset: const Offset(0, 2),
-                          blurRadius: 2,
-                        ),
-                      ],
-                    ),
-                  ),
-                );
-              }),
+          // Center: Hearts Panel (PERFORMANCE: ValueListenableBuilder only rebuilds when lives change)
+          Align(
+            alignment: Alignment.center,
+            child: ValueListenableBuilder<int>(
+              valueListenable: _livesNotifier,
+              builder: (context, livesValue, _) => _HeartsDisplay(
+                lives: livesValue,
+                maxLives: GameConfig.initialLives,
+              ),
             ),
           ),
 
           // Right: Settings
-          _buildTopBtn(
-            icon: Icons.settings, 
-            color: const Color(0xFF6EBD75),
-            onTap: () => setState(() => isSettingsOpen = true),
+          Align(
+            alignment: Alignment.centerRight,
+            child: _buildTopBtn(
+              icon: Icons.settings, 
+              color: const Color(0xFF6EBD75),
+              onTap: () => setState(() => isSettingsOpen = true),
+            ),
           ),
         ],
       ),
@@ -838,23 +931,23 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
             ),
           ),
           const SizedBox(height: 24),
-          // Stars - one by one with zoom-out bounce
+          // Stars - one by one with zoom-out bounce (Unity-style fast)
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: List.generate(3, (index) {
               // Each star starts after the previous one finishes
-              // delay: index * 300ms, duration: 500ms each
-              final delayMs = index * 300;
+              // delay: index * 150ms, duration: 300ms each (faster!)
+              final delayMs = index * 150;
               return Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 8.0),
                 child: TweenAnimationBuilder<double>(
                   tween: Tween(begin: 0.0, end: 1.0),
-                  duration: Duration(milliseconds: delayMs + 500),
+                  duration: Duration(milliseconds: delayMs + 300),
                   curve: Curves.linear,
                   builder: (context, rawValue, child) {
                     // Only animate during this star's window
-                    final double progress = ((rawValue * (delayMs + 500)) - delayMs)
-                        .clamp(0.0, 500.0) / 500.0;
+                    final double progress = ((rawValue * (delayMs + 300)) - delayMs)
+                        .clamp(0.0, 300.0) / 300.0;
 
                     // Zoom from big (1.8x) down to normal (1.0x) with elastic bounce
                     // scale: starts at 0, overshoots to 1.8, settles at 1.0
@@ -1020,77 +1113,66 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
           const SizedBox(height: 16),
           
           // Blue +3 Lives Button
-          Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.bottomCenter,
-            children: [
-              ShinyButton(
-                onPressed: () {
-                  Navigator.of(context, rootNavigator: true).pop();
-                  AdService.instance.showRewardedAd(
-                    onRewarded: (_) {
-                      if (!mounted) return;
-                      setState(() {
-                        lives = GameConfig.initialLives;
-                        isGameOver = false;
-                      });
-                    },
-                    onFailed: () {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Ad not available. Try again later.')),
-                      );
-                    },
-                  );
-                },
-                height: 60,
-                gradientColors: const [Color(0xFF5EA1F8), Color(0xFF246DF1)],
-                borderColor: const Color(0xFF1B55C0),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(8),
+          ShinyButton(
+            onPressed: _isAdLoading
+                ? () {} // No-op when loading
+                : () {
+                    setState(() => _isAdLoading = true);
+                    
+                    AdService.instance.showRewardedAd(
+                      onRewarded: (_) {
+                        if (!mounted) return;
+                        setState(() {
+                          lives = GameConfig.initialLives;
+                          isGameOver = false;
+                          _isAdLoading = false;
+                        });
+                      },
+                      onFailed: () {
+                        if (!mounted) return;
+                        setState(() => _isAdLoading = false);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Ad not available. Try again later.')),
+                        );
+                      },
+                    );
+                  },
+            height: 60,
+            gradientColors: const [Color(0xFF5EA1F8), Color(0xFF246DF1)],
+            borderColor: const Color(0xFF1B55C0),
+            child: _isAdLoading
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: CircularProgressIndicator(
+                      color: Colors.white,
+                      strokeWidth: 3,
+                    ),
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.play_arrow_rounded, color: Color(0xFF246DF1), size: 18),
                       ),
-                      child: const Icon(Icons.play_arrow_rounded, color: Color(0xFF246DF1), size: 18),
-                    ),
-                    const SizedBox(width: 8),
-                    const Text(
-                      '+3 Lives',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 24,
-                        fontWeight: FontWeight.w900,
+                      const SizedBox(width: 8),
+                      const Text(
+                        '+3 Lives',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 24,
+                          fontWeight: FontWeight.w900,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              // Daily Limit badge
-              Positioned(
-                bottom: -16,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFFAD1B6),
-                    borderRadius: BorderRadius.vertical(bottom: Radius.circular(8)),
+                    ],
                   ),
-                  child: const Text(
-                    'Daily Limit: 10/10',
-                    style: TextStyle(
-                      color: Color(0xFF8B4513),
-                      fontSize: 11,
-                      fontWeight: FontWeight.w900,
-                    ),
-                  ),
-                ),
-              ),
-            ],
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 16),
           
           // Red Restart Button
           ShinyButton(
@@ -1184,6 +1266,7 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                   value: isSoundEnabled,
                   onChanged: (val) {
                     setState(() => isSoundEnabled = val);
+                    SoundService.instance.setSoundEnabled(val); // Sync with sound service
                     ProgressService.instance.saveSound(val);
                   },
                   activeThumbColor: const Color(0xFF77D328),
@@ -1296,7 +1379,8 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
                             Navigator.of(context).pop();
                             AdService.instance.showRewardedAd(
                               onRewarded: (amount) {
-                                setState(() => coins += amount);
+                                coins += amount;
+                                _coinsNotifier.value = coins; // PERFORMANCE: Update notifier
                                 ProgressService.instance.saveCoins(coins);
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   SnackBar(content: Text('+$amount Coins earned!')),
@@ -1417,3 +1501,117 @@ class _GameScreenState extends State<GameScreen> with TickerProviderStateMixin {
     ).then((_) => passwordController.dispose());
   }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Performance-optimized stateless widgets
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Coin display widget - prevents rebuilds when other game state changes
+class _CoinDisplay extends StatelessWidget {
+  final int coins;
+  final VoidCallback onTap;
+
+  const _CoinDisplay({
+    required this.coins,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.1),
+              blurRadius: 4,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Stack(
+              alignment: Alignment.bottomRight,
+              children: [
+                Container(
+                  width: 28,
+                  height: 28,
+                  decoration: const BoxDecoration(
+                    color: Color(0xFFFFD700),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.home_rounded, color: Colors.white, size: 18),
+                ),
+                Container(
+                  decoration: const BoxDecoration(
+                    color: Color(0xFF6EBD75),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.add, color: Colors.white, size: 12),
+                ),
+              ],
+            ),
+            const SizedBox(width: 8),
+            Text(
+              '$coins',
+              style: const TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF8B4513),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Hearts display widget - only rebuilds when lives change
+class _HeartsDisplay extends StatelessWidget {
+  final int lives;
+  final int maxLives;
+
+  const _HeartsDisplay({
+    required this.lives,
+    required this.maxLives,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(maxLives, (index) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4.0),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 150),
+            transitionBuilder: (Widget child, Animation<double> animation) {
+              return ScaleTransition(scale: animation, child: child);
+            },
+            child: Icon(
+              index < lives ? Icons.favorite : Icons.favorite_border,
+              key: ValueKey<bool>(index < lives),
+              color: index < lives ? const Color(0xFFE06652) : const Color(0xFFD4B895),
+              size: 32,
+              shadows: [
+                Shadow(
+                  color: Colors.black.withValues(alpha: 0.2),
+                  offset: const Offset(0, 2),
+                  blurRadius: 2,
+                ),
+              ],
+            ),
+          ),
+        );
+      }),
+    );
+  }
+}
+

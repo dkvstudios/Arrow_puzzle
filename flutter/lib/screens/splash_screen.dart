@@ -13,18 +13,13 @@ class SplashScreen extends StatefulWidget {
   State<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderStateMixin {
-  late AnimationController _controller;
-  late Animation<double> _animation;
-  
+class _SplashScreenState extends State<SplashScreen> {
   String _loadingText = "Fetching levels...";
   bool _hasError = false;
 
   @override
   void initState() {
     super.initState();
-    _controller = AnimationController(vsync: this, duration: const Duration(seconds: 1))..repeat(reverse: true);
-    _animation = Tween<double>(begin: 0.8, end: 1.2).animate(CurvedAnimation(parent: _controller, curve: Curves.easeInOut));
     _loadData();
   }
   
@@ -51,9 +46,13 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
         }
       } else {
         if (mounted) {
-          Navigator.of(context).pushReplacement(
-            MaterialPageRoute(builder: (context) => const GameScreen()),
-          );
+          // Small delay to show logo before transition
+          await Future.delayed(const Duration(milliseconds: 500));
+          if (mounted) {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (context) => const GameScreen()),
+            );
+          }
         }
       }
     } catch (e) {
@@ -67,76 +66,71 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 
   @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF4F4F4),
+      backgroundColor: const Color(0xFFF9F1DA),
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            ScaleTransition(
-              scale: _animation,
-              child: const Icon(
-                Icons.arrow_upward_rounded,
-                size: 80,
-                color: Color(0xFF5BA3E0),
+        child: _hasError
+            ? Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    _loadingText,
+                    style: const TextStyle(
+                      fontFamily: 'Fredoka',
+                      fontSize: 16,
+                      color: Colors.red,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 32),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _hasError = false;
+                        _loadingText = "Retrying...";
+                      });
+                      _loadData();
+                    },
+                    icon: const Icon(Icons.refresh),
+                    label: const Text("Retry"),
+                  ),
+                  const SizedBox(height: 12),
+                  ElevatedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).pushReplacement(
+                        MaterialPageRoute(builder: (context) => const ManageLevelsScreen()),
+                      );
+                    },
+                    icon: const Icon(Icons.settings),
+                    label: const Text("Go to Admin Panel"),
+                  ),
+                ],
+              )
+            : Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const SizedBox(height: 350),
+                  Image.asset(
+                    'assets/logo.png',
+                    width: 200,
+                    height: 200,
+                    fit: BoxFit.contain,
+                  ),
+                  const SizedBox(height: 200),
+                  const Text(
+                    'DKV Studio',
+                    style: TextStyle(
+                      fontFamily: 'Fredoka',
+                      fontSize: 24,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF8B4513),
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  Spacer(),
+                ],
               ),
-            ),
-            const SizedBox(height: 32),
-            Text(
-              "ARROW PUZZLE",
-              style: TextStyle(
-                fontFamily: 'Fredoka',
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
-                color: const Color(0xFF8B4513),
-                letterSpacing: 2,
-              ),
-            ),
-            const SizedBox(height: 48),
-            if (!_hasError) const CircularProgressIndicator(color: Color(0xFFE06652)),
-            const SizedBox(height: 16),
-            Text(
-              _loadingText,
-              style: TextStyle(
-                fontFamily: 'Fredoka',
-                fontSize: 16,
-                color: _hasError ? Colors.red : Colors.grey[600],
-              ),
-              textAlign: TextAlign.center,
-            ),
-            if (_hasError) ...[
-              const SizedBox(height: 32),
-              ElevatedButton.icon(
-                onPressed: () {
-                  setState(() {
-                    _hasError = false;
-                    _loadingText = "Retrying...";
-                  });
-                  _loadData();
-                },
-                icon: const Icon(Icons.refresh),
-                label: const Text("Retry"),
-              ),
-              const SizedBox(height: 12),
-              ElevatedButton.icon(
-                onPressed: () {
-                  Navigator.of(context).pushReplacement(
-                    MaterialPageRoute(builder: (context) => const ManageLevelsScreen()),
-                  );
-                },
-                icon: const Icon(Icons.settings),
-                label: const Text("Go to Admin Panel"),
-              ),
-            ]
-          ],
-        ),
       ),
     );
   }
